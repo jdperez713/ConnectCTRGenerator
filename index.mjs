@@ -1,58 +1,63 @@
-import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
+//this Lambda will generate a CTR from a Kenisis event and then place it in an S3 Bucket for storing 
 
-const dynamoDBClient = new DynamoDBClient({ region: 'us-east-1' });
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+
+// Initialize the S3 client (ensure the region matches your bucket's region)
+const s3Client = new S3Client({ region: 'us-east-1' });
+
+// Set the S3 bucket name as provided
+const bucketName = 'amazon-connect-f7e5ad160906';
 
 export const handler = async (event) => {
     try {
+        // Process each record from the Kinesis event
         for (const record of event.Records) {
             // Decode and parse the Kinesis data
             const payload = Buffer.from(record.kinesis.data, 'base64').toString('utf-8');
             const contactTraceRecord = JSON.parse(payload);
             console.log("JSON Payload:", contactTraceRecord);
 
-            // Prepare the DynamoDB item with defaults for missing fields
-            const dynamoItem = {};
-
-            // Iterate over all keys in the record and map them to DynamoDB attributes
-            for (const [key, value] of Object.entries(contactTraceRecord)) {
-                if (value === null || value === undefined) {
-                    // Set an empty string for null/undefined values
-                    dynamoItem[key] = { S: '' };
-                } else if (typeof value === 'object' && !Array.isArray(value)) {
-                    // Convert objects to JSON strings
-                    dynamoItem[key] = { S: JSON.stringify(value) };
-                } else if (Array.isArray(value)) {
-                    // Convert arrays to JSON strings
-                    dynamoItem[key] = { S: JSON.stringify(value) };
-                } else if (typeof value === 'number') {
-                    // Convert numbers to DynamoDB Number type
-                    dynamoItem[key] = { N: String(value) };
-                } else {
-                    // Handle strings and other types as DynamoDB String type
-                    dynamoItem[key] = { S: String(value) };
-                }
+            // Extract the ContactId from the record. If missing, log and skip.
+            const contactId = contactTraceRecord.ContactId;
+            if (!contactId) {
+                console.error("Missing ContactId in record:", contactTraceRecord);
+                continue;
             }
 
-            // Define the PutItemCommand parameters
+            // Get current date information for folder structure and timestamp
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = String(now.getMonth() + 1).padStart(2, '0'); // Month is zero-indexed
+            const day = String(now.getDate()).padStart(2, '0');
+            const timestamp = now.toISOString();
+
+            // Build the object key using the provided folder structure and file naming convention
+            const objectKey = `connect/nitovo/nitovo_ctrs/${year}/${month}/${day}/${contactId}_NitovoCTR_${timestamp}.json`;
+
+            // Convert the record back to a pretty-printed JSON string for the file content
+            const jsonString = JSON.stringify(contactTraceRecord, null, 2);
+
+            // Define the parameters for the S3 PutObject command
             const params = {
-                TableName: 'DI-211SSO-CTR_Table',
-                Item: dynamoItem,
+                Bucket: bucketName,
+                Key: objectKey,
+                Body: jsonString,
+                ContentType: 'application/json'
             };
 
-            // Write the record to DynamoDB
-            console.log("Writing to Dynamo: ", JSON.stringify(params));
-            await dynamoDBClient.send(new PutItemCommand(params));
+            console.log("Writing JSON to S3 with params:", JSON.stringify(params));
+            await s3Client.send(new PutObjectCommand(params));
         }
 
         return {
             statusCode: 200,
-            body: 'Records processed successfully.',
+            body: 'Records processed and written to S3 successfully.'
         };
     } catch (error) {
-        console.error('Error processing Kinesis records:', error);
+        console.error('Error processing records:', error);
         return {
             statusCode: 500,
-            body: 'Error processing records.',
+            body: 'Error processing records.'
         };
     }
 };
